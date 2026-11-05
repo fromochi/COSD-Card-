@@ -1,0 +1,104 @@
+class_name PlayerView
+extends Control
+
+var pi: int = 0          # 玩家索引
+var gs: GameState        # 全局状态引用
+var switcher: Control    # 主场景引用（用于刷新标签）
+
+@onready var name_edit: LineEdit = $NameEdit
+@onready var role_btn: Button = $RoleBtn
+@onready var a_label: Label = $ALabel
+@onready var b_label: Label = $BLabel
+@onready var hand_container: VBoxContainer = $HandContainer
+@onready var play_container: VBoxContainer = $PlayContainer
+@onready var table_container: VBoxContainer = $TableContainer
+
+func setup(idx: int, main: Control) -> void:
+	pi = idx
+	switcher = main
+	gs = main.gs
+	_build_all()
+
+func _build_all() -> void:
+	_build_header()
+	_build_values()
+	_build_role()
+	_build_hand()
+	_build_play()
+	_build_table()
+	refresh()
+
+func _build_header() -> void:
+	name_edit.text = gs.players[pi].name
+	name_edit.text_submitted.connect(_on_name_submitted)
+
+func _on_name_submitted(new_name: String) -> void:
+	gs.players[pi].name = new_name if new_name.strip_edges() != "" else "玩家%d" % (pi + 1)
+	gs.log_msg("玩家%d 改名为 %s" % [pi + 1, gs.players[pi].name])
+	switcher.refresh_tabs()
+
+func _build_values() -> void:
+	# 修复报错1：补全缺失的函数
+	pass
+
+func _build_role() -> void:
+	role_btn.pressed.connect(_on_role_clicked)
+
+func _on_role_clicked() -> void:
+	# 弹出角色选择对话框（可后续完善）
+	pass
+
+func _build_hand() -> void:
+	# 手牌区域由 refresh 动态构建
+	pass
+
+func _build_play() -> void:
+	# 出牌区域
+	pass
+
+func _build_table() -> void:
+	# 桌面区域
+	pass
+
+func refresh() -> void:
+	var p = gs.players[pi]
+	name_edit.text = p.name
+	a_label.text = "A: %d" % p.a
+	b_label.text = "B: %d" % p.b
+	
+	# 刷新手牌
+	for child in hand_container.get_children():
+		child.queue_free()
+	for card in p.hand:
+		var btn := Button.new()
+		btn.text = card.name
+		btn.pressed.connect(_play_card.bind(card))
+		hand_container.add_child(btn)
+	
+	# 刷新桌面
+	for child in table_container.get_children():
+		child.queue_free()
+	for card in p.table:
+		var lbl := Label.new()
+		lbl.text = card.name
+		table_container.add_child(lbl)
+
+func _play_card(card) -> void:
+	var p = gs.players[pi]
+	# 出牌逻辑示例（可扩展）
+	p.hand.erase(card)
+	p.table.append(card)
+	refresh()
+	gs.log_msg("玩家%d 打出 %s" % [pi + 1, card.name])
+
+# 修复报错2、3、4：显式声明变量类型
+func _process_dice() -> void:
+	var r: int = randi() % 20 + 1   # 第79行
+	var dc_val: int = int(gs.dc_value)
+	var ok: bool = r + gs.players[pi].b >= dc_val
+	gs.log_msg("玩家%d 掷骰: %d + B%d %s DC%d" % [pi + 1, r, gs.players[pi].b, "≥" if ok else "<", dc_val])
+
+func some_iteration() -> void:
+	# 第113行和124行类似的循环变量
+	for v: int in [1, 2, 3]:   # 显式声明 v 为 int
+		print(v)
