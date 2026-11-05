@@ -1,0 +1,77 @@
+extends Node
+## 卡库数据：8 个小类型库 + 2 个大牌库，全部在这里预设，美术资源按路径自动加载
+## 所有牌只写 id / 名字 / 类型 / 数值 / 描述 / 贴图路径，具体效果由管理员在出牌时填写
+
+enum Lib { NUM, BASIC, COND_BASIC, PUBLIC_ROLE, PLACED_ROLE, EVENT, CONVERT, ENV }
+
+const LIB_NAMES := {
+	Lib.NUM: "数值", Lib.BASIC: "基础", Lib.COND_BASIC: "条件基础",
+	Lib.PUBLIC_ROLE: "公示角色", Lib.PLACED_ROLE: "放置角色",
+	Lib.EVENT: "事件", Lib.CONVERT: "转化", Lib.ENV: "环境",
+}
+const POOL_NAMES := {0: "开局牌", 1: "抽牌卡池"}
+
+## 小类型库：id -> {name, type, value, desc, art}
+## art 留空则显示占位色块；填 "res://card_art/xxx.png" 即自动显示贴图
+var libraries := {
+	Lib.NUM: [
+		{"id": "N1", "name": "数值牌示例1", "type": Lib.NUM, "value": 1, "desc": "数值牌，不可抽，可在出牌时作为数值使用", "art": ""},
+		{"id": "N2", "name": "数值牌示例2", "type": Lib.NUM, "value": 2, "desc": "", "art": ""},
+	],
+	Lib.BASIC: [
+		{"id": "B1", "name": "基础牌示例", "type": Lib.BASIC, "value": 0, "desc": "基础动作牌", "art": ""},
+	],
+	Lib.COND_BASIC: [
+		{"id": "C1", "name": "条件基础示例", "type": Lib.COND_BASIC, "value": 0, "desc": "满足条件才能打出的基础牌，不可抽", "art": ""},
+	],
+	Lib.PUBLIC_ROLE: [
+		{"id": "P1", "name": "角色示例·守卫", "type": Lib.PUBLIC_ROLE, "value": 0, "desc": "开局公示选择，选定后不可更换，不可抽", "art": ""},
+		{"id": "P2", "name": "角色示例·游侠", "type": Lib.PUBLIC_ROLE, "value": 0, "desc": "", "art": ""},
+	],
+	Lib.PLACED_ROLE: [
+		{"id": "L1", "name": "放置角色示例", "type": Lib.PLACED_ROLE, "value": 0, "desc": "打出后放置到场上", "art": ""},
+	],
+	Lib.EVENT: [
+		{"id": "E1", "name": "事件牌示例", "type": Lib.EVENT, "value": 0, "desc": "触发一次性事件", "art": ""},
+	],
+	Lib.CONVERT: [
+		{"id": "V1", "name": "转化牌示例", "type": Lib.CONVERT, "value": 0, "desc": "把牌/数值转化为其他效果", "art": ""},
+	],
+	Lib.ENV: [
+		{"id": "EN1", "name": "环境牌示例", "type": Lib.ENV, "value": 0, "desc": "持续影响全场的环境", "art": ""},
+	],
+}
+
+## 大牌库：0=开局牌，1=抽牌卡池。元素为 [小类型, 牌id, 张数]
+## 规则：数值 / 条件基础 / 公示角色 不进抽牌卡池
+var pools := {
+	0: [[Lib.BASIC, "B1", 2], [Lib.PLACED_ROLE, "L1", 1]],
+	1: [[Lib.BASIC, "B1", 8], [Lib.PLACED_ROLE, "L1", 2], [Lib.EVENT, "E1", 2], [Lib.CONVERT, "V1", 2], [Lib.ENV, "EN1", 1]],
+}
+
+func get_card(lib: int, cid: String) -> Dictionary:
+	for c in libraries.get(lib, []):
+		if c.id == cid:
+			return c
+	return {}
+
+func card_label(lib: int, cid: String) -> String:
+	var c := get_card(lib, cid)
+	if c.is_empty():
+		return "%s:?" % cid
+	return "%s《%s》" % [LIB_NAMES.get(lib, "?"), c.name]
+
+func is_dealable(lib: int) -> bool:
+	return lib != Lib.NUM and lib != Lib.COND_BASIC and lib != Lib.PUBLIC_ROLE
+
+## 返回铺开的牌堆数组，元素为 [小类型, 牌id]
+func build_deck(pool_id: int) -> Array:
+	var out := []
+	for entry in pools.get(pool_id, []):
+		for _i in range(int(entry[2])):
+			out.append([int(entry[0]), String(entry[1])])
+	return out
+
+## 开局牌库最终张数（每人开局全拿）
+func opening_count() -> int:
+	return build_deck(0).size()
