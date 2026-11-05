@@ -1,0 +1,201 @@
+extends Control
+## 管理员主界面：顶部状态 + 玩家场景标签页（最多 8）+ 总数据页 + 卡库预设页
+@warning_ignore("shadowed_global_identifier")
+const PlayerView = preload("res://scripts/player_view.gd")
+
+
+@onready var gs: Node = get_node("/root/GameState")
+var tabs: TabContainer
+var pages: Array[Node] = []
+var top_info: Label
+var setup_box: HBoxContainer
+var count_spin: SpinBox
+var name_edits: Array[LineEdit] = []
+var overview: Node
+var lib_editor: Node
+var bg: TextureRect
+
+
+
+
+func _ready() -> void:
+	set_anchors_preset(Control.PRESET_FULL_RECT)
+	_build_bg()
+	var root := VBoxContainer.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_theme_constant_override("separation", 8)
+	add_child(root)
+	root.add_child(_build_top())
+	tabs = TabContainer.new()
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tabs.tab_changed.connect(func(i: int) -> void:
+		if i >= 0 and i < pages.size() and pages[i] is PlayerView:
+			pages[i].refresh())
+	root.add_child(tabs)
+	SaveLoad.load_all(gs)
+	_rebuild_pages()
+	refresh_top()
+
+func _build_bg() -> void:
+	bg = TextureRect.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if ResourceLoader.exists("res://桌布/table.png"):
+		bg.texture = load("res://桌布/table.png")
+	else:
+		var img := Image.create(64, 64, false, Image.FORMAT_RGB8)
+		img.fill(Color(0.07, 0.09, 0.16))
+		bg.texture = ImageTexture.create_from_image(img)
+	add_child(bg)
+	move_child(bg, 0)
+
+func _build_top() -> Control:
+	var box := UIKit.panel(Color(0.1, 0.13, 0.2), UIKit.GOLD)
+	box.custom_minimum_size = Vector2(0, 88)
+	var vb := VBoxContainer.new()
+	var t := UIKit.label("🂠 卡牌管理台（管理员端·单机）", 22, UIKit.GOLD)
+	vb.add_child(t)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	setup_box = HBoxContainer.new()
+	setup_box.add_child(UIKit.label("玩家人数", 15))
+	count_spin = SpinBox.new()
+	count_spin.min_value = 1; count_spin.max_value = CardData.MAX_PLAYERS
+	count_spin.value = gs.num_players if gs.num_players > 0 else 8
+	count_spin.step = 1
+	count_spin.value_changed.connect(func(v: float) -> void: _build_name_edits(int(v)))
+	setup_box.add_child(count_spin)
+	var start := UIKit.button("开局（发开局牌）", Color(0.3, 0.45, 0.3), UIKit.GREEN)
+	start.pressed.connect(_on_start)
+	setup_box.add_child(start)
+	var warn := UIKit.label("开局后再改人数会重置本局", 12, UIKit.RED)
+	setup_box.add_child(warn)
+	row.add_child(setup_box)
+	var b1 := UIKit.button("全员抽牌", Color(0.25, 0.35, 0.5))
+	b1.pressed.connect(func() -> void: gs.draw_all(); refresh_all())
+	row.add_child(b1)
+	var b2 := UIKit.button("结束回合", Color(0.45, 0.35, 0.25), UIKit.GOLD)
+	b2.pressed.connect(func() -> void: gs.end_turn(); refresh_all())
+	row.add_child(b2)
+	var b3 := UIKit.button("重开（清档）", Color(0.4, 0.25, 0.3), UIKit.RED)
+	b3.pressed.connect(_on_restart)
+	row.add_child(b3)
+	vb.add_child(row)
+	top_info = UIKit.label("", 14, UIKit.BLUE)
+	vb.add_child(top_info)
+	box.add_child(vb)
+	_build_name_edits(int(count_spin.value))
+	return box
+
+func _build_name_edits(n: int) -> void:
+	for c in name_edits:
+		c.queue_free()
+	name_edits.clear()
+	for i in n:
+		var e := LineEdit.new()
+		e.placeholder_text = "玩家%d" % (i + 1)
+		e.custom_minimum_size = Vector2(90, 0)
+		if i < gs.player_names.size():
+			e.text = gs.player_names[i]
+		setup_box.add_child(e)
+		name_edits.append(e)
+
+func _on_start() -> void:
+	var n := int(count_spin.value)
+	var names: Array[String] = []
+	for i in n:
+		names.append(name_edits[i].text if i < name_edits.size() else "")
+	gs.setup(n, names)
+	SaveLoad.save_all(gs)
+	_rebuild_pages()
+	refresh_all()
+
+func _on_restart() -> void:
+	for i in gs.players.size():
+		gs.players[i] = {"name": gs.players[i].name, "role": "", "a": 10, "b": 0,
+			"hand": [], "table": [], "played": [], "discard": []}
+	gs.deck.clear()
+	gs.round_no = 1
+	gs.phase = 0
+	gs.logs.clear()
+	gs.deal_opening()
+	gs.shuffle_deck()
+	gs.log_msg("重开本局")
+	SaveLoad.save_all(gs)
+	_rebuild_pages()
+	refresh_all()
+
+func _rebuild_pages() -> void:
+	for c in tabs.get_children():
+		tabs.remove_child(c)
+		c.queue_free()
+	pages.clear()
+	
+	if gs.players.is_empty():
+		# 1. 创建玩家名字数组（用于初始化 GameState 数据）
+		var player_names: Array[String] = []
+		for i in range(int(count_spin.value)):
+			player_names.append("玩家%d" % (i + 1))
+		
+		# 2. 调用 GameState 的 setup 初始化数据（传入名字数组）
+		gs.setup(int(count_spin.value), player_names)
+		
+		# 3. 重新加载/刷新玩家数据状态（如果 GameState 里有这个方法）
+		if gs.has_method("reload_players"):
+			gs.reload_players()
+	
+	# 4. 创建 PlayerView 界面节点
+	for i in gs.players.size():
+		var pv := PlayerView.new()
+		pv.setup(i, self) # PlayerView 的 setup 依然是传索引和主场景
+		tabs.add_child(pv)
+	
+	refresh_all()
+
+	
+	for scr in [load("res://scripts/overview.gd"), load("res://scripts/library_editor.gd")]:
+		var n := VBoxContainer.new()
+		n.set_script(scr)
+		n.gs = gs
+		tabs.add_child(n)
+		pages.append(n)
+	
+	overview = pages[pages.size() - 2]
+	lib_editor = pages[pages.size() - 1]
+	refresh_tabs()
+
+
+func _overview() -> Node:
+	return overview
+
+func _libeditor() -> Node:
+	return lib_editor
+
+func refresh_tabs() -> void:
+	for i in min(pages.size(), tabs.get_tab_count()):
+		if pages[i] is PlayerView:
+			tabs.set_tab_title(i, "%s%s" % [gs.players[i].name, " 🔒" if gs.role_locked(i) else " ❓"])
+
+func refresh_top() -> void:
+	if gs.players.is_empty():
+		top_info.text = "请设置人数并点「开局」"
+		return
+	var ph := "选角色阶段" if gs.phase == 0 else ("对战中" if gs.phase == 1 else "已结束")
+	top_info.text = "回合 %d ｜ %s ｜ 牌库剩余 %d ｜ 开局牌每人 %d 张 ｜ 总A %d ｜ 总B %d" % [
+		gs.round_no, ph, gs.deck.size(), CardData.opening_count(), gs.total_a(), gs.total_b()]
+
+func refresh_all() -> void:
+	refresh_top()
+	refresh_tabs()
+	for p in pages:
+		if p is PlayerView:
+			p.refresh()
+		elif p.has_method("rebuild"):
+			p.rebuild()
+	SaveLoad.save_all(gs)
+
+## 供子页调用
+func refresh_tabs_only() -> void:
+	refresh_tabs()
