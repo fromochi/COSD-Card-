@@ -1,0 +1,172 @@
+extends VBoxContainer
+## 卡库编辑区：8 个小类型库 + 2 个大牌库，管理员可直接改，改完自动存盘
+
+var gs: Node
+var lib_menu: OptionButton = null
+var card_box: VBoxContainer
+var pool_box: VBoxContainer
+
+func _ready() -> void:
+	add_theme_constant_override("separation", 8)
+	var head := HBoxContainer.new()
+	head.add_child(UIKit.label("卡库预设（改完即时生效并保存）", 18, UIKit.GOLD))
+	var save := UIKit.button("存盘", Color(0.3, 0.45, 0.3), UIKit.GREEN)
+	save.pressed.connect(func() -> void: SaveLoad.save_all(gs); flash("已保存到 user://cardgame_save.cfg"))
+	head.add_child(save)
+	var reload := UIKit.button("放弃改动·重载", Color(0.4, 0.25, 0.3), UIKit.RED)
+	reload.pressed.connect(func() -> void: SaveLoad.load_all(gs); rebuild(); flash("已重载"))
+	head.add_child(reload)
+	add_child(head)
+	flash_lbl = UIKit.label("", 13, UIKit.BLUE)
+	add_child(flash_lbl)
+
+	var row := HSplitContainer.new()
+	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var left := UIKit.panel()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var lv := VBoxContainer.new()
+	lv.add_child(UIKit.label("① 小类型库（7 种 + 数值）", 15, UIKit.GOLD))
+	lv.add_child(UIKit.label("贴图列填 res://card_art/xxx.png，留空显示占位", 12, UIKit.SUB))
+	lib_menu = OptionButton.new()
+	for k in CardData.LIB_NAMES.keys():
+		lib_menu.add_item(CardData.LIB_NAMES[k], int(k))
+	lib_menu.item_selected.connect(func(i: int) -> void: _lib = lib_menu.get_item_id(i); _rebuild_cards())
+	lv.add_child(lib_menu)
+	card_box = VBoxContainer.new()
+	lv.add_child(UIKit.scroll(card_box))
+	left.add_child(lv)
+	row.add_child(left)
+
+	var right := UIKit.panel()
+	right.custom_minimum_size = Vector2(420, 0)
+	var rv := VBoxContainer.new()
+	rv.add_child(UIKit.label("② 大牌库（开局牌 / 抽牌卡池）", 15, UIKit.GOLD))
+	rv.add_child(UIKit.label("格式：小类型|牌id|张数；数值/条件基础/公示角色不进抽牌卡池", 12, UIKit.SUB))
+	pool_box = VBoxContainer.new()
+	rv.add_child(pool_box)
+	right.add_child(rv)
+	row.add_child(right)
+	add_child(row)
+	rebuild()
+
+var flash_lbl: Label
+var _lib := 0
+
+func flash(t: String) -> void:
+	flash_lbl.text = t
+
+func rebuild() -> void:
+	if lib_menu:
+		for i in lib_menu.item_count:
+			if lib_menu.get_item_id(i) == _lib:
+				lib_menu.select(i)
+	_rebuild_cards()
+	_rebuild_pools()
+
+func _rebuild_cards() -> void:
+	for c in card_box.get_children():
+		c.queue_free()
+	for f in CardData.libraries[_lib]:
+		var row := HBoxContainer.new()
+		row.add_child(UIKit.card_frame(_lib, f, 70, 60))
+		var col := VBoxContainer.new()
+		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var id_lbl := UIKit.label("id: %s" % f.id, 12, UIKit.BLUE)
+		col.add_child(id_lbl)
+		var name_e := LineEdit.new(); name_e.text = f.name; name_e.placeholder_text = "卡牌名"
+		name_e.text_changed.connect(func(t: String) -> void: f.name = t; SaveLoad.save_all(gs))
+		col.add_child(name_e)
+		var desc_e := LineEdit.new(); desc_e.text = f.desc; desc_e.placeholder_text = "效果说明（自由填写）"
+		desc_e.text_changed.connect(func(t: String) -> void: f.desc = t; SaveLoad.save_all(gs))
+		col.add_child(desc_e)
+		var hb := HBoxContainer.new()
+		hb.add_child(UIKit.label("数值", 12, UIKit.SUB))
+		var sp := SpinBox.new(); sp.min_value = -99; sp.max_value = 99; sp.value = f.value; sp.step = 1
+		sp.value_changed.connect(func(v: float) -> void: f.value = int(v); SaveLoad.save_all(gs))
+		hb.add_child(sp)
+		hb.add_child(UIKit.label("贴图路径", 12, UIKit.SUB))
+		var art := LineEdit.new(); art.text = f.art; art.placeholder_text = "res://card_art/…"; art.custom_minimum_size = Vector2(220, 0)
+		art.text_changed.connect(func(t: String) -> void: f.art = t; SaveLoad.save_all(gs))
+		hb.add_child(art)
+		col.add_child(hb)
+		row.add_child(col)
+		var del := UIKit.button("删除", Color(0.4, 0.25, 0.3), UIKit.RED)
+		del.pressed.connect(func() -> void:
+			CardData.libraries[_lib].erase(f)
+			SaveLoad.save_all(gs); _rebuild_cards())
+		row.add_child(del)
+		card_box.add_child(row)
+	var add := UIKit.button("＋ 在【%s】库新增一张牌" % CardData.LIB_NAMES[_lib], Color(0.25, 0.4, 0.45), UIKit.GREEN)
+	add.pressed.connect(_add_card)
+	card_box.add_child(add)
+
+func _add_card() -> void:
+	var arr: Array = CardData.libraries[_lib]
+	
+	# 修复第105行：显式声明为 Dictionary 并拆分赋值
+	var prefix_dict: Dictionary = {0: "N", 1: "B", 2: "C", 3: "P", 4: "L", 5: "E", 6: "V", 7: "EN"}
+	var prefix: String = prefix_dict[_lib]
+	
+	var id := "%s%d" % [prefix, arr.size() + 1]
+	var n := 1
+	while _exists(id):
+		n += 1
+		id = "%s%d" % [prefix, arr.size() + n]
+
+
+func _exists(id: String) -> bool:
+	for lib in CardData.libraries.values():
+		for c: Dictionary in lib:
+			if c.id == id:
+				return true
+	return false
+
+func _rebuild_pools() -> void:
+	for c in pool_box.get_children():
+		c.queue_free()
+	for pid in [0, 1]:
+		var box := UIKit.panel(UIKit.PANEL, UIKit.GOLD if pid == 0 else UIKit.BLUE)
+		var vb := VBoxContainer.new()
+		vb.add_child(UIKit.label("%s（%d 张）" % [CardData.POOL_NAMES[pid], CardData.build_deck(pid).size()], 14, UIKit.GOLD if pid == 0 else UIKit.BLUE))
+		for i in CardData.pools[pid].size():
+			var e: Array = CardData.pools[pid][i]
+			var hb := HBoxContainer.new()
+			hb.add_child(UIKit.label("%s / %s" % [CardData.LIB_NAMES[int(e[0])], CardData.card_label(int(e[0]), String(e[1]))], 12))
+			hb.add_child(UIKit.label(" ×", 12, UIKit.SUB))
+			var sp := SpinBox.new(); sp.min_value = 0; sp.max_value = 99; sp.value = int(e[2]); sp.step = 1
+			sp.value_changed.connect(func(v: float) -> void:
+				CardData.pools[pid][i][2] = int(v); SaveLoad.save_all(gs); _rebuild_pools())
+			hb.add_child(sp)
+			var del := UIKit.button("移出", Color(0.4, 0.25, 0.3), UIKit.RED)
+			del.pressed.connect(func() -> void:
+				CardData.pools[pid].erase(e); SaveLoad.save_all(gs); _rebuild_pools())
+			hb.add_child(del)
+			vb.add_child(hb)
+		var add_hb := HBoxContainer.new()
+		var lm := OptionButton.new()
+		for k in CardData.LIB_NAMES.keys():
+			lm.add_item(CardData.LIB_NAMES[k], int(k))
+		var cm := OptionButton.new()
+		var fill := func(_i: int = 0) -> void:
+			cm.clear()
+			var lib := lm.get_item_id(lm.selected)
+			if pid == 1 and not CardData.is_dealable(lib):
+				cm.add_item("（该类不进抽牌池）", -1)
+				return
+			for c: Dictionary in CardData.libraries[lib]:
+				cm.add_item(c.name, c.id)
+		lm.item_selected.connect(fill)
+		fill.call()
+		add_hb.add_child(lm); add_hb.add_child(cm)
+		var add := UIKit.button("＋加入", Color(0.25, 0.4, 0.45), UIKit.GREEN)
+		add.pressed.connect(func() -> void:
+			var lib := lm.get_item_id(lm.selected)
+			if cm.selected < 0 or cm.get_item_id(cm.selected) < 0:
+				flash("该小类型不能放入抽牌卡池")
+				return
+			CardData.pools[pid].append([lib, cm.get_item_id(cm.selected), 1])
+			SaveLoad.save_all(gs); _rebuild_pools())
+		add_hb.add_child(add)
+		vb.add_child(add_hb)
+		box.add_child(vb)
+		pool_box.add_child(box)
