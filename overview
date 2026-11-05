@@ -1,0 +1,110 @@
+extends VBoxContainer
+## 总数据 / 计算结果页：一屏看全所有玩家，支持批量抽牌、批量结算、出牌历史
+
+var gs: Node
+var grid: VBoxContainer
+var log_box: VBoxContainer
+var result: Label
+var dc: SpinBox
+
+func _ready() -> void:
+	add_theme_constant_override("separation", 8)
+	var head := HBoxContainer.new()
+	head.add_child(UIKit.label("总数据与计算结果", 20, UIKit.GOLD))
+	var b1 := UIKit.button("全员抽牌", Color(0.25, 0.35, 0.5)); b1.pressed.connect(func() -> void: gs.draw_all(); host().refresh_all())
+	var b2 := UIKit.button("结束回合（清本回合已出牌）", Color(0.45, 0.35, 0.25), UIKit.GOLD); b2.pressed.connect(func() -> void: gs.end_turn(); host().refresh_all())
+	head.add_child(b1); head.add_child(b2)
+	head.add_child(UIKit.label("  批量判定 DC", 14, UIKit.SUB))
+	dc = SpinBox.new(); dc.min_value = 0; dc.max_value = 99; dc.value = 10; dc.step = 1
+	head.add_child(dc)
+	var b3 := UIKit.button("掷 d20 判定（全员）", Color(0.3, 0.4, 0.5)); b3.pressed.connect(_roll_all)
+	head.add_child(b3)
+	var b4 := UIKit.button("导出结算文本", UIKit.PANEL2); b4.pressed.connect(_export)
+	head.add_child(b4)
+	add_child(head)
+	result = UIKit.label("", 15, UIKit.BLUE)
+	add_child(result)
+	grid = VBoxContainer.new()
+	add_child(UIKit.scroll(grid))
+	var lp := UIKit.panel()
+	var lv := VBoxContainer.new()
+	lv.add_child(UIKit.label("结算日志（出牌 / 数值变化 / 判定）", 15, UIKit.GOLD))
+	log_box = VBoxContainer.new()
+	lv.add_child(log_box)
+	lp.add_child(lv)
+	lp.custom_minimum_size = Vector2(0, 220)
+	add_child(lp)
+	rebuild()
+
+func _chosen() -> int:
+	var n := 0
+	for p in gs.players:
+		if p.role != "":
+			n += 1
+	return n
+
+func host() -> Node:
+	return get_parent().get_parent()
+
+func rebuild() -> void:
+	for c in grid.get_children():
+		c.queue_free()
+	for c in log_box.get_children():
+		c.queue_free()
+	var sum_card := UIKit.panel(UIKit.PANEL, UIKit.GOLD)
+	var hb := HBoxContainer.new()
+	hb.add_child(UIKit.label("回合 %d ｜ 牌库余 %d ｜ 总A %d ｜ 总B %d ｜ 已选角 %d/%d" % [
+		gs.round_no, gs.deck.size(), gs.total_a(), gs.total_b(),
+		gs.players.size() - _chosen(), gs.players.size()], 16, UIKit.GOLD))
+	sum_card.add_child(hb)
+	grid.add_child(sum_card)
+	for i in gs.players.size():
+		grid.add_child(_row(i))
+	for l in gs.logs.slice(maxi(0, gs.logs.size() - 80), gs.logs.size()):
+		log_box.add_child(UIKit.label(String(l), 12, UIKit.TEXT))
+
+func _row(i: int) -> Control:
+	var p: Dictionary = gs.players[i]
+	var box := UIKit.panel(UIKit.PANEL, UIKit.LIB_COLOR[3] if gs.role_locked(i) else UIKit.RED)
+	var hb := HBoxContainer.new()
+	hb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_theme_constant_override("separation", 12)
+	hb.add_child(UIKit.label("#%d" % (i + 1), 14, UIKit.SUB))
+	hb.add_child(UIKit.label(p.name, 16, UIKit.GOLD))
+	hb.add_child(UIKit.label("角色：" + (CardData.card_label(3, p.role) if p.role != "" else "未选"), 13, UIKit.BLUE))
+	var c1 := VBoxContainer.new(); c1.add_child(UIKit.bar(p.a, gs.A_MAX, UIKit.RED, "A值")); c1.custom_minimum_size = Vector2(150, 0)
+	var c2 := VBoxContainer.new(); c2.add_child(UIKit.bar(p.b, maxi(20, p.b), UIKit.BLUE, "B值")); c2.custom_minimum_size = Vector2(150, 0)
+	hb.add_child(c1); hb.add_child(c2)
+	hb.add_child(UIKit.label("手牌 %d" % p.hand.size(), 13))
+	hb.add_child(UIKit.label("场上 %d" % p.table.size(), 13))
+	hb.add_child(UIKit.label("本回合已出 %d" % p.played.size(), 13, UIKit.GREEN))
+	hb.add_child(UIKit.label("弃 %d" % p.discard.size(), 13, UIKit.SUB))
+	var go := UIKit.button("跳转", UIKit.PANEL2)
+	go.pressed.connect(func() -> void: host().tabs.current_tab = i)
+	hb.add_child(go)
+	box.add_child(hb)
+	return box
+
+func _roll_all() -> void:
+	var lines := []
+	for p in gs.players:
+		var r := randi() % 20 + 1
+		var ok: bool = r + p.b >= int(dc.value)
+		lines.append("%s d20=%d + B%d %s DC%d" % [p.name, r, p.b, ">=" if ok else "<", int(dc.value)])
+		result.text = " | ".join(lines)
+	gs.log_msg("批量判定 DC%d : %s" % [int(dc.value), "; ".join(lines)])
+
+
+func _export() -> void:
+	var txt := "【回合 %d 结算】\n" % gs.round_no
+	for p in gs.players:
+		txt += "%s | 角色 %s | A=%d B=%d | 手牌 %d | 场上 %s\n" % [p.name, p.role, p.a, p.b, p.hand.size(), ""]
+		var table_labels: Array = []
+		for c in p.table:
+			table_labels.append(CardData.card_label(int(c[0]), String(c[1])))
+		txt += "|".join(table_labels)
+		txt += "\n" + "\n".join(gs.logs)
+	
+	DisplayServer.clipboard_set(txt)
+	result.text = "结算文本已复制到剪贴板"
+	gs.logmgs("管理员导出结算文本")
