@@ -1,0 +1,177 @@
+extends Resource
+## 全局对局状态，由管理员界面驱动
+
+const MAX_PLAYERS := 8
+const A_MIN := 0
+const A_MAX := 30
+
+var player_names: Array[String] = []
+var num_players := 0
+var round_no := 1
+var phase := 0  # 0=选角色 1=对战中 2=结束
+var logs: Array[String] = []
+## 每个玩家：{name, role, a, b, hand:[[lib,cid]], table:[[lib,cid]], played:[[lib,cid]], discard:[[lib,cid]]}
+var players: Array[Dictionary] = []
+var deck: Array = []   # 抽牌卡池剩余，元素 [lib, cid]
+
+func setup(n: int, names: Array[String]) -> void:
+	num_players = clampi(n, 1, MAX_PLAYERS)
+	player_names = names.duplicate()
+	players.clear()
+	for i in num_players:
+		players.append({
+			"name": names[i] if i < names.size() and names[i] != "" else "玩家%d" % (i + 1),
+			"role": "", "a": 10, "b": 0,
+			"hand": [], "table": [], "played": [], "discard": [],
+		})
+	round_no = 1
+	phase = 0
+	logs.clear()
+	deal_opening()
+	shuffle_deck()
+	log_msg("建立 %d 个玩家场景，开局发牌完成，请各场景选择公示角色" % num_players)
+
+func slot(i: int, key: String) -> Array:
+	return players[i][key]
+
+func log_msg(t: String) -> void:
+	logs.push_back("[回合%d] %s" % [round_no, t])
+	if logs.size() > 400:
+		logs.remove_at(0)
+
+## 开局牌：库中所有牌直接进入每人手牌
+func deal_opening() -> void:
+	var opening := CardData.build_deck(0)
+	for p in players:
+		p.hand = opening.duplicate(true)
+
+## 抽牌卡池洗牌
+func shuffle_deck() -> void:
+	deck = CardData.build_deck(1)
+	deck.shuffle()
+
+## 选角色：选定后不可再改（role_locked 判断即 role != ""）
+func choose_role(pi: int, lib: int, cid: String) -> bool:
+	if phase != 0:
+		return false
+	if players[pi].role != "":
+		return false
+	if CardData.get_card(lib, cid).is_empty():
+		return false
+	players[pi].role = cid
+	log_msg("%s 选择角色 %s" % [players[pi].name, CardData.card_label(lib, cid)])
+	if all_roles_chosen():
+		phase = 1
+		log_msg("全员已选角，进入对战阶段；每回合从抽牌卡池随机抽 1 张")
+	return true
+
+func all_roles_chosen() -> bool:
+	for p in players:
+		if p.role == "":
+			return false
+	return true
+
+func role_locked(pi: int) -> bool:
+	return players[pi].role != ""
+
+## 每回合抽 1 张；牌池空则自动重洗弃牌堆
+func draw_for(pi: int) -> String:
+	if deck.is_empty():
+		var back := []
+		for p in players:
+			back.append_array(p.discard)
+			p.discard.clear()
+		if back.is_empty():
+			return "抽牌卡池已空"
+		deck = back
+		deck.shuffle()
+		log_msg("抽牌卡池已空，自动重洗弃牌堆（%d 张）" % deck.size())
+	var c: Array = deck.pop_back()
+	players[pi].hand.append(c)
+	return "%s 抽到 %s" % [players[pi].name, CardData.card_label(c[0], c[1])]
+
+func draw_all() -> void:
+	if phase != 1:
+		return
+	for i in players.size():
+		log_msg(draw_for(i))
+
+func end_turn() -> void:
+	if phase != 1:
+		return
+	for p in players:
+		p.played.clear()
+	round_no += 1
+	draw_all()
+
+## 出牌：from=出牌人，targets=受影响玩家，a_delta/b_delta 为对目标数值的增减
+func play_card(from: int, hand_idx: int, targets: Array, lib: int, cid: String, a_delta: int, b_delta: int, note: String) -> String:
+	var p := players[from]
+	if hand_idx < 0 or hand_idx >= p.hand.size():
+		return "手牌索引无效"
+	if phase == 0:
+		return "请先完成选角色"
+	var c: Array = p.hand[hand_idx]
+	if String(c[1]) != cid:
+		return "手牌与所选卡不一致"
+	p.hand.remove_at(hand_idx)
+	var place := lib == CardData.Lib.PLACED_ROLE or lib == CardData.Lib.ENV
+	if place:
+		p.table.append([lib, cid])
+	else:
+		p.played.append([lib, cid])
+	var changed := []
+	for t in targets:
+		var ti := int(t)
+		if ti < 0 or ti >= players.size():
+			continue
+		players[ti].a = clampi(players[ti].a + a_delta, A_MIN, A_MAX)
+		players[ti].b += b_delta
+		changed.append("%s(A%+d B%+d)" % [players[ti].name, a_delta, b_delta])
+	var msg := "%s 打出 %s → %s%s%s" % [
+		p.name, CardData.card_label(lib, cid),
+		", ".join(changed) if not changed.is_empty() else "无目标",
+		"  ｜" + note if note != "" else "",
+		"（放置到桌面）" if place else "",
+	]
+	log_msg(msg)
+	return msg
+
+## 管理员直接改数值
+func set_values(pi: int, a: int, b: int, note: String) -> void:
+	players[pi].a = clampi(a, A_MIN, A_MAX)
+	players[pi].b = b
+	log_msg("管理员修正 %s：A=%d B=%d %s" % [players[pi].name, players[pi].a, players[pi].b, note])
+
+## 弃牌
+func discard_card(pi: int, hand_idx: int, to_bottom: bool) -> void:
+	var p := players[pi]
+	if hand_idx < 0 or hand_idx >= p.hand.size():
+		return
+	var c: Array = p.hand[hand_idx]
+	p.hand.remove_at(hand_idx)
+	if to_bottom:
+		deck.insert(0, c)
+		log_msg("%s 将 %s 放回牌库底" % [p.name, CardData.card_label(c[0], c[1])])
+	else:
+		p.discard.append(c)
+		log_msg("%s 弃置 %s" % [p.name, CardData.card_label(c[0], c[1])])
+
+func remove_table_card(pi: int, idx: int) -> void:
+	if idx >= 0 and idx < players[pi].table.size():
+		var c: Array = players[pi].table[idx]
+		players[pi].table.remove_at(idx)
+		players[pi].discard.append(c)
+		log_msg("%s 的场上卡 %s 移除" % [players[pi].name, CardData.card_label(c[0], c[1])])
+
+func total_a() -> int:
+	var s := 0
+	for p in players:
+		s += p.a
+	return s
+
+func total_b() -> int:
+	var s := 0
+	for p in players:
+		s += p.b
+	return s
